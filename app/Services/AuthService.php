@@ -27,8 +27,8 @@ class AuthService
     public static $providers = [
         1 => SOCIAL_GOOGLE,
         2 => SOCIAL_FACEBOOK,
-        3 => SOCIAL_GITHUB,
-        4 => SOCIAL_LINKEDIN,
+       // 3 => SOCIAL_GITHUB,
+       // 4 => SOCIAL_LINKEDIN,
     ];
 
     /**

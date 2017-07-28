@@ -52,8 +52,9 @@
         @if (Utils::isOAuthEnabled())
             <div class="row existing-accounts">
                 <p>{{ trans('texts.login_or_existing') }}</p>
-                @foreach (App\Services\AuthService::$providers as $provider)
-                    <div class="col-md-3 col-xs-6">
+                @foreach (App\Services\AuthService::$providers as $key=>$provider)
+
+                    <div class="col-md-3 col-xs-6 @if($key == 1) col-md-offset-3  @endif">
                         <a href="{{ URL::to('auth/' . $provider) }}" class="btn btn-primary btn-lg" title="{{ $provider }}"
                            id="{{ strtolower($provider) }}LoginButton">
                             @if($provider == SOCIAL_GITHUB)
