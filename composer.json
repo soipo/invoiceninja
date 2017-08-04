@@ -78,7 +78,6 @@
         "predis/predis": "^1.1",
         "simshaun/recurr": "dev-master",
         "softcommerce/omnipay-paytrace": "~1.0",
-        "soiposervices/invoiceninja-access": "^1.0",
         "symfony/css-selector": "~3.0",
         "turbo124/laravel-push-notification": "2.*",
         "vink/omnipay-komoju": "~1.0",
