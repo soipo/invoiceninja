@@ -233,6 +233,7 @@ table.dataTable tbody th, table.dataTable tbody td {
 }
 
 .dataTables_wrapper {
+    overflow: auto;
     padding-top: 16px;
 }
 
