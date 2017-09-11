@@ -59,14 +59,17 @@
         NINJA.isRegistered = {{ \Utils::isRegistered() ? 'true' : 'false' }};
 
         window.onerror = function (errorMsg, url, lineNumber, column, error) {
+            // Error in hosted third party library
             if (errorMsg.indexOf('Script error.') > -1) {
                 return;
             }
-
+            // Error due to incognito mode
+            if (errorMsg.indexOf('DOM Exception 22') > -1) {
+                return;
+            }
             try {
                 // Use StackTraceJS to parse the error context
                 if (error) {
-                    var message = error.message ? error.message : error;
                     StackTrace.fromError(error).then(function (result) {
                         var gps = new StackTraceGPS();
                         gps.findFunctionName(result[0]).then(function (result) {
@@ -78,8 +81,7 @@
                 }
 
                 trackEvent('/error', errorMsg);
-            } catch (err) {
-            }
+            } catch (err) {}
 
             return false;
         }
@@ -189,7 +191,12 @@
 
 <body class="body">
 
-@if (Utils::isNinjaProd() && isset($_ENV['TAG_MANAGER_KEY']) && $_ENV['TAG_MANAGER_KEY'])
+@if (request()->phantomjs)
+    <script>
+        function trackEvent(category, action) {
+        }
+    </script>
+@elseif (Utils::isNinjaProd() && isset($_ENV['TAG_MANAGER_KEY']) && $_ENV['TAG_MANAGER_KEY'])
     <!-- Google Tag Manager -->
     <noscript>
         <iframe src="//www.googletagmanager.com/ns.html?id={{ $_ENV['TAG_MANAGER_KEY'] }}"
@@ -262,6 +269,8 @@
                 fbq('track', 'Purchase', {value: '{{ session('trackEventAmount') }}', currency: 'USD'});
             @endif
         @endif
+
+        $('[data-toggle="tooltip"]').tooltip();
 
         @if (Session::has('onReady'))
         {{ Session::get('onReady') }}

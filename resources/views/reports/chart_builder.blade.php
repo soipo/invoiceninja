@@ -78,7 +78,8 @@
     {!! Former::open()->addClass('report-form')->rules(['start_date' => 'required', 'end_date' => 'required']) !!}
 
     <div style="display:none">
-    {!! Former::text('action') !!}
+    	{!! Former::text('action') !!}
+		{!! Former::text('format') !!}
     </div>
 
     {!! Former::populateField('start_date', $startDate) !!}
@@ -118,16 +119,16 @@
                             </div>
                         </div>
 
-						<div id="statusField" style="display:{{ in_array($reportType, [ENTITY_INVOICE, ENTITY_PRODUCT]) ? 'block' : 'none' }}">
+						<div id="statusField" style="display:none">
 							{!! Former::select('invoice_status')->label('status')
-									->addOption(trans('texts.all'), 'all')
-									->addOption(trans('texts.draft'), 'draft')
-									->addOption(trans('texts.sent'), 'sent')
-									->addOption(trans('texts.unpaid'), 'unpaid')
-									->addOption(trans('texts.paid'), 'paid') !!}
+									->addOption(trans('texts.status_all'), 'all')
+									->addOption(trans('texts.status_draft'), 'draft')
+									->addOption(trans('texts.status_sent'), 'sent')
+									->addOption(trans('texts.status_unpaid'), 'unpaid')
+									->addOption(trans('texts.status_paid'), 'paid') !!}
 						</div>
 
-						<div id="dateField" style="display:{{ $reportType == ENTITY_TAX_RATE ? 'block' : 'none' }}">
+						<div id="dateField" style="display:none">
                             {!! Former::select('date_field')->label(trans('texts.filter'))
                                     ->addOption(trans('texts.invoice_date'), FILTER_INVOICE_DATE)
                                     ->addOption(trans('texts.payment_date'), FILTER_PAYMENT_DATE) !!}
@@ -157,10 +158,13 @@
 
 
 	<center>
-		{!! Button::primary(trans('texts.export'))
-				->withAttributes(array('onclick' => 'onExportClick()'))
-				->appendIcon(Icon::create('export'))
-				->large() !!}
+		{!! DropdownButton::primary(trans('texts.export'))
+			  ->large()
+              ->withContents([
+				  ['url' => 'javascript:onExportClick("csv")', 'label' => 'CSV'],
+				  ['url' => 'javascript:onExportClick("xlsx")', 'label' => 'XLSX'],
+				  ['url' => 'javascript:onExportClick("pdf")', 'label' => 'PDF'],
+              ]) !!}
 		{!! Button::success(trans('texts.run'))
 				->withAttributes(array('id' => 'submitButton'))
 				->submit()
@@ -253,11 +257,26 @@
 
 	<script type="text/javascript">
 
-    function onExportClick() {
+    function onExportClick(format) {
         $('#action').val('export');
+		$('#format').val(format);
         $('#submitButton').click();
         $('#action').val('');
     }
+
+	function setFiltersShown() {
+		var val = $('#report_type').val();
+		if (val == '{{ ENTITY_TAX_RATE }}') {
+			$('#dateField').fadeIn();
+		} else {
+			$('#dateField').fadeOut();
+		}
+		if (val == '{{ ENTITY_INVOICE }}' || val == '{{ ENTITY_PRODUCT }}') {
+			$('#statusField').fadeIn();
+		} else {
+			$('#statusField').fadeOut();
+		}
+	}
 
 	var sumColumns = [];
 	@foreach ($columns as $column)
@@ -273,17 +292,8 @@
         });
 
         $('#report_type').change(function() {
-            var val = $('#report_type').val();
-			if (val == '{{ ENTITY_TAX_RATE }}') {
-                $('#dateField').fadeIn();
-            } else {
-                $('#dateField').fadeOut();
-            }
-			if (val == '{{ ENTITY_INVOICE }}' || val == '{{ ENTITY_PRODUCT }}') {
-                $('#statusField').fadeIn();
-            } else {
-                $('#statusField').fadeOut();
-            }
+			var val = $('#report_type').val();
+			setFiltersShown();
             if (isStorageSupported()) {
                 localStorage.setItem('last:report_type', val);
             }
@@ -292,7 +302,7 @@
 		// parse 1,000.00 or 1.000,00
 		function convertStringToNumber(str) {
 			str = str + '' || '';
-			if (str.indexOf(':')) {
+			if (str.indexOf(':') >= 0) {
 				return roundToTwo(moment.duration(str).asHours());
 			} else {
 				var number = Number(str.replace(/[^0-9]+/g, ''));
@@ -348,6 +358,7 @@
 			if (lastReportType) {
 				$('#report_type').val(lastReportType);
 			}
+			setFiltersShown();
 		});
     })
 

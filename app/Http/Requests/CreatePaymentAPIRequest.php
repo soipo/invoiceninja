@@ -26,13 +26,18 @@ class CreatePaymentAPIRequest extends PaymentRequest
         if (! $this->invoice_id || ! $this->amount) {
             return [
                 'invoice_id' => 'required|numeric|min:1',
-                'amount' => 'required|numeric|not_in:0',
+                'amount' => 'required|numeric',
             ];
         }
 
         $this->invoice = $invoice = Invoice::scope($this->invoice_id)
+            ->withArchived()
             ->invoices()
-            ->firstOrFail();
+            ->first();
+
+        if (! $this->invoice) {
+            abort(404, 'Invoice was not found');
+        }
 
         $this->merge([
             'invoice_id' => $invoice->id,

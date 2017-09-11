@@ -64,7 +64,7 @@ class RecurringInvoiceDatatable extends EntityDatatable
             [
                 'private_notes',
                 function ($model) {
-                    return $model->private_notes;
+                    return e($model->private_notes);
                 },
             ],
             [
@@ -105,12 +105,21 @@ class RecurringInvoiceDatatable extends EntityDatatable
                 },
             ],
             [
-                trans('texts.clone_invoice'),
+                trans("texts.clone_invoice"),
                 function ($model) {
                     return URL::to("invoices/{$model->public_id}/clone");
                 },
                 function ($model) {
                     return Auth::user()->can('create', ENTITY_INVOICE);
+                },
+            ],
+            [
+                trans("texts.clone_quote"),
+                function ($model) {
+                    return URL::to("quotes/{$model->public_id}/clone");
+                },
+                function ($model) {
+                    return Auth::user()->can('create', ENTITY_QUOTE);
                 },
             ],
 

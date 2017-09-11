@@ -8,6 +8,7 @@ use App\Models\LookupAccount;
 use Auth;
 use DB;
 use Exception;
+use App\Ninja\Mailers\UserMailer;
 
 class PurgeAccountData extends Job
 {
@@ -16,7 +17,7 @@ class PurgeAccountData extends Job
      *
      * @return void
      */
-    public function handle()
+    public function handle(UserMailer $userMailer)
     {
         $user = Auth::user();
         $account = $user->account;
@@ -61,6 +62,8 @@ class PurgeAccountData extends Job
         $account->client_number_counter = $account->client_number_counter > 0 ? 1 : 0;
         $account->save();
 
+        session([RECENTLY_VIEWED => false]);
+
         if (env('MULTI_DB_ENABLED')) {
             $current = config('database.default');
             config(['database.default' => DB_NINJA_LOOKUP]);
@@ -71,5 +74,9 @@ class PurgeAccountData extends Job
 
             config(['database.default' => $current]);
         }
+
+        $subject = trans('texts.purge_successful');
+        $message = trans('texts.purge_details', ['account' => $user->account->getDisplayName()]);
+        $userMailer->sendMessage($user, $subject, $message);
     }
 }

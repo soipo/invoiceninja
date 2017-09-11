@@ -290,6 +290,9 @@ class InvoiceRepository extends BaseRepository
                 'invoices.invoice_date',
                 'invoices.balance as balance',
                 'invoices.due_date',
+                'invoices.invoice_status_id',
+                'invoices.due_date',
+                'invoices.quote_invoice_id',
                 'clients.public_id as client_public_id',
                 DB::raw("COALESCE(NULLIF(clients.name,''), NULLIF(CONCAT(contacts.first_name, ' ', contacts.last_name),''), NULLIF(contacts.email,'')) client_name"),
                 'invoices.public_id',
@@ -324,7 +327,35 @@ class InvoiceRepository extends BaseRepository
         return $table->addColumn('due_date', function ($model) {
             return Utils::fromSqlDate($model->due_date);
         })
-            ->make();
+        ->addColumn('invoice_status_id', function ($model) use ($entityType) {
+            if ($model->invoice_status_id == INVOICE_STATUS_PAID) {
+                $label = trans('texts.status_paid');
+                $class = 'success';
+            } elseif ($model->invoice_status_id == INVOICE_STATUS_PARTIAL) {
+                $label = trans('texts.status_partial');
+                $class = 'info';
+            } elseif (Invoice::calcIsOverdue($model->balance, $model->due_date)) {
+                $class = 'danger';
+                if ($entityType == ENTITY_INVOICE) {
+                    $label = trans('texts.overdue');
+                } else {
+                    $label = trans('texts.expired');
+                }
+            } elseif ($entityType == ENTITY_QUOTE && ($model->invoice_status_id >= INVOICE_STATUS_APPROVED || $model->quote_invoice_id)) {
+                $label = trans('texts.status_approved');
+                $class = 'success';
+            } else {
+                $class = 'default';
+                if ($entityType == ENTITY_INVOICE) {
+                    $label = trans('texts.unpaid');
+                } else {
+                    $label = trans('texts.pending');
+                }
+            }
+
+            return "<h4><div class=\"label label-{$class}\">$label</div></h4>";
+        })
+        ->make();
     }
 
     /**
@@ -495,8 +526,8 @@ class InvoiceRepository extends BaseRepository
                 continue;
             }
 
-            $invoiceItemCost = round(Utils::parseFloat($item['cost']), 2);
-            $invoiceItemQty = round(Utils::parseFloat($item['qty']), 2);
+            $invoiceItemCost = Utils::roundSignificant(Utils::parseFloat($item['cost']));
+            $invoiceItemQty = Utils::roundSignificant(Utils::parseFloat($item['qty']));
 
             $lineTotal = $invoiceItemCost * $invoiceItemQty;
             $total += round($lineTotal, 2);
@@ -504,8 +535,8 @@ class InvoiceRepository extends BaseRepository
 
         foreach ($data['invoice_items'] as $item) {
             $item = (array) $item;
-            $invoiceItemCost = round(Utils::parseFloat($item['cost']), 2);
-            $invoiceItemQty = round(Utils::parseFloat($item['qty']), 2);
+            $invoiceItemCost = Utils::roundSignificant(Utils::parseFloat($item['cost']));
+            $invoiceItemQty = Utils::roundSignificant(Utils::parseFloat($item['qty']));
             $lineTotal = $invoiceItemCost * $invoiceItemQty;
 
             if ($invoice->discount > 0) {
@@ -655,7 +686,7 @@ class InvoiceRepository extends BaseRepository
                     if ($account->update_products
                         && ! $invoice->has_tasks
                         && ! $invoice->has_expenses
-                        && $productKey != trans('texts.surcharge')
+                        && ! in_array($productKey, Utils::trans(['surcharge', 'discount', 'fee']))
                     ) {
                         $product = Product::findProductByKey($productKey);
                         if (! $product) {
@@ -784,11 +815,11 @@ class InvoiceRepository extends BaseRepository
 
     /**
      * @param Invoice $invoice
-     * @param null    $quotePublicId
+     * @param null    $quoteId
      *
      * @return mixed
      */
-    public function cloneInvoice(Invoice $invoice, $quotePublicId = null)
+    public function cloneInvoice(Invoice $invoice, $quoteId = null)
     {
         $invoice->load('invitations', 'invoice_items');
         $account = $invoice->account;
@@ -811,9 +842,6 @@ class InvoiceRepository extends BaseRepository
                 $invoiceNumber = false;
             }
         }
-        $clone->invoice_number = $invoiceNumber ?: $account->getNextNumber($clone);
-        $clone->invoice_date = date_create()->format('Y-m-d');
-        $clone->due_date = $account->defaultDueDate($invoice->client);
 
         foreach ([
           'client_id',
@@ -845,9 +873,9 @@ class InvoiceRepository extends BaseRepository
             $clone->$field = $invoice->$field;
         }
 
-        if ($quotePublicId) {
+        if ($quoteId) {
             $clone->invoice_type_id = INVOICE_TYPE_STANDARD;
-            $clone->quote_id = $quotePublicId;
+            $clone->quote_id = $quoteId;
             if ($account->invoice_terms) {
                 $clone->terms = $account->invoice_terms;
             }
@@ -857,9 +885,12 @@ class InvoiceRepository extends BaseRepository
             }
         }
 
+        $clone->invoice_number = $invoiceNumber ?: $account->getNextNumber($clone);
+        $clone->invoice_date = date_create()->format('Y-m-d');
+        $clone->due_date = $account->defaultDueDate($invoice->client);
         $clone->save();
 
-        if ($quotePublicId) {
+        if ($quoteId) {
             $invoice->quote_invoice_id = $clone->public_id;
             $invoice->save();
         }
@@ -1096,19 +1127,24 @@ class InvoiceRepository extends BaseRepository
      *
      * @return mixed
      */
-    public function findNeedingReminding(Account $account)
+    public function findNeedingReminding(Account $account, $filterEnabled = true)
     {
         $dates = [];
 
         for ($i = 1; $i <= 3; $i++) {
-            if ($date = $account->getReminderDate($i)) {
+            if ($date = $account->getReminderDate($i, $filterEnabled)) {
                 $field = $account->{"field_reminder{$i}"} == REMINDER_FIELD_DUE_DATE ? 'due_date' : 'invoice_date';
                 $dates[] = "$field = '$date'";
             }
         }
 
+        if (! count($dates)) {
+            return [];
+        }
+
         $sql = implode(' OR ', $dates);
         $invoices = Invoice::invoiceType(INVOICE_TYPE_STANDARD)
+                    ->with('invoice_items')
                     ->whereAccountId($account->id)
                     ->where('balance', '>', 0)
                     ->where('is_recurring', '=', false)
@@ -1135,6 +1171,32 @@ class InvoiceRepository extends BaseRepository
                 break;
             }
         }
+    }
+
+    public function setLateFee($invoice, $amount, $percent)
+    {
+        if ($amount <= 0 && $percent <= 0) {
+            return false;
+        }
+
+        $account = $invoice->account;
+
+        $data = $invoice->toArray();
+        $fee = $amount;
+
+        if ($invoice->amount > 0) {
+            $fee += round($invoice->amount * $percent / 100, 2);
+        }
+
+        $item = [];
+        $item['product_key'] = trans('texts.fee');
+        $item['notes'] = trans('texts.late_fee_added', ['date' => $account->formatDate('now')]);
+        $item['qty'] = 1;
+        $item['cost'] = $fee;
+        $item['invoice_item_type_id'] = INVOICE_ITEM_TYPE_LATE_FEE;
+        $data['invoice_items'][] = $item;
+
+        $this->save($data, $invoice);
     }
 
     public function setGatewayFee($invoice, $gatewayTypeId)

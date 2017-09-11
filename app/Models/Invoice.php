@@ -109,12 +109,16 @@ class Invoice extends EntityModel implements BalanceAffecting
             'po_number',
             'invoice_date',
             'due_date',
-            'amount',
             'paid',
-            'notes',
             'terms',
-            'product',
-            'quantity',
+            'public_notes',
+            'private_notes',
+            'item_product',
+            'item_notes',
+            'item_quantity',
+            'item_cost',
+            'item_tax1',
+            'item_tax2',
         ];
     }
 
@@ -125,16 +129,19 @@ class Invoice extends EntityModel implements BalanceAffecting
     {
         return [
             'number^po' => 'invoice_number',
-            'amount' => 'amount',
             'client|organization' => 'name',
             'paid^date' => 'paid',
             'invoice date|create date' => 'invoice_date',
             'po number' => 'po_number',
             'due date' => 'due_date',
             'terms' => 'terms',
-            'notes' => 'notes',
-            'product|item' => 'product',
-            'quantity|qty' => 'quantity',
+            'public notes' => 'public_notes',
+            'private notes' => 'private_notes',
+            'description' => 'item_notes',
+            'quantity|qty' => 'item_quantity',
+            'amount|cost' => 'item_cost',
+            'product|item' => 'item_product',
+            'tax' => 'item_tax1',
         ];
     }
 
@@ -306,6 +313,23 @@ class Invoice extends EntityModel implements BalanceAffecting
     }
 
     /**
+     * @return mixed
+     */
+    public function allDocuments()
+    {
+        $documents = $this->documents;
+        $documents = $documents->merge($this->account->defaultDocuments);
+
+        foreach ($this->expenses as $expense) {
+            if ($expense->invoice_documents) {
+                $documents = $documents->merge($expense->documents);
+            }
+        }
+
+        return $documents;
+    }
+
+    /**
      * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function invoice_status()
@@ -333,6 +357,14 @@ class Invoice extends EntityModel implements BalanceAffecting
      * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function recurring_invoice()
+    {
+        return $this->belongsTo('App\Models\Invoice');
+    }
+
+    /**
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
+    public function quote()
     {
         return $this->belongsTo('App\Models\Invoice');
     }
@@ -540,12 +572,12 @@ class Invoice extends EntityModel implements BalanceAffecting
     /**
      * @param bool $save
      */
-    public function updatePaidStatus($save = true)
+    public function updatePaidStatus($paid = false, $save = true)
     {
         $statusId = false;
-        if ($this->amount != 0 && $this->balance == 0) {
+        if ($paid && $this->balance == 0) {
             $statusId = INVOICE_STATUS_PAID;
-        } elseif ($this->isSent() && $this->balance > 0 && $this->balance < $this->amount) {
+        } elseif ($paid && $this->balance > 0 && $this->balance < $this->amount) {
             $statusId = INVOICE_STATUS_PARTIAL;
         } elseif ($this->isPartial() && $this->balance > 0) {
             $statusId = ($this->balance == $this->amount ? INVOICE_STATUS_SENT : INVOICE_STATUS_PARTIAL);
@@ -628,7 +660,7 @@ class Invoice extends EntityModel implements BalanceAffecting
 
     public function canBePaid()
     {
-        return floatval($this->balance) != 0 && ! $this->is_deleted && $this->isStandard();
+        return ! $this->isPaid() && ! $this->is_deleted && $this->isStandard();
     }
 
     public static function calcStatusLabel($status, $class, $entityType, $quoteInvoiceId)
@@ -1155,10 +1187,17 @@ class Invoice extends EntityModel implements BalanceAffecting
         $link = $invitation->getLink('view', true);
         $pdfString = false;
         $phantomjsSecret = env('PHANTOMJS_SECRET');
+        $phantomjsLink = $link . "?phantomjs=true&phantomjs_secret={$phantomjsSecret}";
 
         try {
             if (env('PHANTOMJS_BIN_PATH')) {
-                $pdfString = CurlUtils::phantom('GET', $link . "?phantomjs=true&phantomjs_secret={$phantomjsSecret}");
+                // we see occasional 408 errors
+                for ($i=1; $i<=5; $i++) {
+                    $pdfString = CurlUtils::phantom('GET', $phantomjsLink);
+                    if ($pdfString) {
+                        break;
+                    }
+                }
             }
 
             if (! $pdfString && ($key = env('PHANTOMJS_CLOUD_KEY'))) {
@@ -1168,12 +1207,12 @@ class Invoice extends EntityModel implements BalanceAffecting
 
             $pdfString = strip_tags($pdfString);
         } catch (\Exception $exception) {
-            Utils::logError("PhantomJS - Failed to load: {$exception->getMessage()}");
+            Utils::logError("PhantomJS - Failed to load {$phantomjsLink}: {$exception->getMessage()}");
             return false;
         }
 
         if (! $pdfString || strlen($pdfString) < 200) {
-            Utils::logError("PhantomJS - Invalid response: {$pdfString}");
+            Utils::logError("PhantomJS - Invalid response {$phantomjsLink}: {$pdfString}");
             return false;
         }
 
@@ -1181,7 +1220,7 @@ class Invoice extends EntityModel implements BalanceAffecting
             if ($pdf = Utils::decodePDF($pdfString)) {
                 return $pdf;
             } else {
-                Utils::logError("PhantomJS - Unable to decode: {$pdfString}");
+                Utils::logError("PhantomJS - Unable to decode {$phantomjsLink}: {$pdfString}");
                 return false;
             }
         } else {
@@ -1319,13 +1358,21 @@ class Invoice extends EntityModel implements BalanceAffecting
     /**
      * @return int
      */
-    public function countDocuments()
+    public function countDocuments($expenses = false)
     {
         $count = count($this->documents);
 
         foreach ($this->expenses as $expense) {
             if ($expense->invoice_documents) {
                 $count += count($expense->documents);
+            }
+        }
+
+        if ($expenses) {
+            foreach ($expenses as $expense) {
+                if ($expense->invoice_documents) {
+                    $count += count($expense->documents);
+                }
             }
         }
 
@@ -1337,7 +1384,11 @@ class Invoice extends EntityModel implements BalanceAffecting
      */
     public function hasDocuments()
     {
-        if (count($this->documents)) {
+        if ($this->documents->count()) {
+            return true;
+        }
+
+        if ($this->account->defaultDocuments->count()) {
             return true;
         }
 
@@ -1419,6 +1470,17 @@ class Invoice extends EntityModel implements BalanceAffecting
     public function getDueDateLabel()
     {
         return $this->isQuote() ? 'valid_until' : 'due_date';
+    }
+
+    public function onlyHasTasks()
+    {
+        foreach ($this->invoice_items as $item) {
+            if ($item->invoice_item_type_id != INVOICE_ITEM_TYPE_TASK) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 

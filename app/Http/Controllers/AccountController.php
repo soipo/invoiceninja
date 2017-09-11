@@ -20,6 +20,7 @@ use App\Models\PaymentTerm;
 use App\Models\Product;
 use App\Models\TaxRate;
 use App\Models\User;
+use App\Models\AccountEmailSettings;
 use App\Ninja\Mailers\ContactMailer;
 use App\Ninja\Mailers\UserMailer;
 use App\Ninja\Repositories\AccountRepository;
@@ -164,9 +165,7 @@ class AccountController extends BaseController
             Session::flash('warning', trans('texts.plan_refunded'));
         }
 
-        $hasPaid = false;
-        if (! empty($planDetails['paid']) && $plan != PLAN_FREE) {
-            $hasPaid = true;
+        if ($company->payment && ! empty($planDetails['paid']) && $plan != PLAN_FREE) {
             $time_used = $planDetails['paid']->diff(date_create());
             $days_used = $time_used->days;
 
@@ -182,11 +181,7 @@ class AccountController extends BaseController
 
         if ($newPlan['price'] > $credit) {
             $invitation = $this->accountRepo->enablePlan($newPlan, $credit);
-            if ($hasPaid) {
-                return Redirect::to('view/' . $invitation->invitation_key);
-            } else {
-                return Redirect::to('payment/' . $invitation->invitation_key);
-            }
+            return Redirect::to('view/' . $invitation->invitation_key);
         } else {
             if ($plan == PLAN_FREE) {
                 $company->discount = 0;
@@ -423,7 +418,6 @@ class AccountController extends BaseController
             'timezones' => Cache::get('timezones'),
             'dateFormats' => Cache::get('dateFormats'),
             'datetimeFormats' => Cache::get('datetimeFormats'),
-            'currencies' => Cache::get('currencies'),
             'title' => trans('texts.localization'),
             'weekdays' => Utils::getTranslatedWeekdayNames(),
             'months' => Utils::getMonthOptions(),
@@ -660,7 +654,7 @@ class AccountController extends BaseController
         $data['account'] = $account;
         $data['templates'] = [];
         $data['defaultTemplates'] = [];
-        foreach ([ENTITY_INVOICE, ENTITY_QUOTE, ENTITY_PAYMENT, REMINDER1, REMINDER2, REMINDER3] as $type) {
+        foreach (AccountEmailSettings::$templates as $type) {
             $data['templates'][$type] = [
                 'subject' => $account->getEmailSubject($type),
                 'template' => $account->getEmailTemplate($type),
@@ -807,7 +801,7 @@ class AccountController extends BaseController
         if (Auth::user()->account->hasFeature(FEATURE_EMAIL_TEMPLATES_REMINDERS)) {
             $account = Auth::user()->account;
 
-            foreach ([ENTITY_INVOICE, ENTITY_QUOTE, ENTITY_PAYMENT, REMINDER1, REMINDER2, REMINDER3] as $type) {
+            foreach (AccountEmailSettings::$templates as $type) {
                 $subjectField = "email_subject_{$type}";
                 $subject = Input::get($subjectField, $account->getEmailSubject($type));
                 $account->account_email_settings->$subjectField = ($subject == $account->getDefaultEmailSubject($type) ? null : $subject);
@@ -817,12 +811,16 @@ class AccountController extends BaseController
                 $account->account_email_settings->$bodyField = ($body == $account->getDefaultEmailTemplate($type) ? null : $body);
             }
 
-            foreach ([REMINDER1, REMINDER2, REMINDER3] as $type) {
+            foreach ([TEMPLATE_REMINDER1, TEMPLATE_REMINDER2, TEMPLATE_REMINDER3] as $type) {
                 $enableField = "enable_{$type}";
                 $account->$enableField = Input::get($enableField) ? true : false;
                 $account->{"num_days_{$type}"} = Input::get("num_days_{$type}");
                 $account->{"field_{$type}"} = Input::get("field_{$type}");
                 $account->{"direction_{$type}"} = Input::get("field_{$type}") == REMINDER_FIELD_INVOICE_DATE ? REMINDER_DIRECTION_AFTER : Input::get("direction_{$type}");
+
+                $number = preg_replace('/[^0-9]/', '', $type);
+                $account->account_email_settings->{"late_fee{$number}_amount"} = Input::get("late_fee{$number}_amount");
+                $account->account_email_settings->{"late_fee{$number}_percent"} = Input::get("late_fee{$number}_percent");
             }
 
             $account->save();
@@ -1367,7 +1365,12 @@ class AccountController extends BaseController
 
         $user = Auth::user();
         $account = Auth::user()->account;
+
         \Log::info("Canceled Account: {$account->name} - {$user->email}");
+        $type = $account->hasMultipleAccounts() ? 'company' : 'account';
+        $subject = trans("texts.deleted_{$type}");
+        $message = trans("texts.deleted_{$type}_details", ['account' => $account->getDisplayName()]);
+        $this->userMailer->sendMessage($user, $subject, $message);
 
         $refunded = false;
         if (! $account->hasMultipleAccounts()) {

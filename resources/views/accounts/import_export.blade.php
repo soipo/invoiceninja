@@ -34,7 +34,8 @@
         <br/>
         @foreach (\App\Services\ImportService::$entityTypes as $entityType)
             {!! Former::file($entityType)
-                    ->addGroupClass("import-file {$entityType}-file") !!}
+                    ->addGroupClass("import-file {$entityType}-file")
+                    ->label(Utils::pluralizeEntityType($entityType)) !!}
         @endforeach
 
         <div id="jsonIncludes" style="display:none">
@@ -45,9 +46,14 @@
                         trans('texts.settings') => 'settings',
                     ]) !!}
         </div>
-        <div id="inovicePlaneImport" style="display:none"><center>
-                {!! trans('texts.invoiceplane_import', ['link' => link_to(INVOICEPLANE_IMPORT, 'turbo124/Plane2Ninja', ['target' => '_blank'])]) !!}
-        </center></div>
+
+        <div id="notInovicePlaneImport">
+            {!! Former::plaintext(' ')->help(trans('texts.use_english_version')) !!}
+        </div>
+        <div id="inovicePlaneImport" style="display:none">
+            {!! Former::plaintext(' ')->help(trans('texts.invoiceplane_import', ['link' => link_to(INVOICEPLANE_IMPORT, 'turbo124/Plane2Ninja', ['target' => '_blank'])])) !!}
+        </div>
+
         <br/>
 
         {!! Former::actions( Button::info(trans('texts.upload'))->withAttributes(['id' => 'uploadButton'])->submit()->large()->appendIcon(Icon::create('open'))) !!}
@@ -163,12 +169,18 @@
                 $('.JSON-file').show();
             }
         @endif
-        if (val === '{{ IMPORT_INVOICEPLANE }}') {
+        if (val === '{{ IMPORT_JSON }}') {
+            $('#uploadButton').show();
+            $('#inovicePlaneImport').hide();
+            $('#notInovicePlaneImport').hide();
+        } else if (val === '{{ IMPORT_INVOICEPLANE }}') {
             $('#uploadButton').hide();
             $('#inovicePlaneImport').show();
+            $('#notInovicePlaneImport').hide();
         } else {
             $('#uploadButton').show();
             $('#inovicePlaneImport').hide();
+            $('#notInovicePlaneImport').show();
         }
     @endforeach
   }

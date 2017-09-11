@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Client;
+use App\Models\Contact;
 use App\Models\EntityModel;
 use App\Models\Expense;
 use App\Models\ExpenseCategory;
@@ -10,8 +11,10 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Vendor;
+use App\Models\AccountGatewayToken;
 use App\Ninja\Import\BaseTransformer;
 use App\Ninja\Repositories\ClientRepository;
+use App\Ninja\Repositories\CustomerRepository;
 use App\Ninja\Repositories\ContactRepository;
 use App\Ninja\Repositories\ExpenseCategoryRepository;
 use App\Ninja\Repositories\ExpenseRepository;
@@ -19,6 +22,7 @@ use App\Ninja\Repositories\InvoiceRepository;
 use App\Ninja\Repositories\PaymentRepository;
 use App\Ninja\Repositories\ProductRepository;
 use App\Ninja\Repositories\VendorRepository;
+use App\Ninja\Repositories\TaxRateRepository;
 use App\Ninja\Serializers\ArraySerializer;
 use Auth;
 use Cache;
@@ -51,6 +55,11 @@ class ImportService
      * @var ClientRepository
      */
     protected $clientRepo;
+
+    /**
+     * @var CustomerRepository
+     */
+    protected $customerRepo;
 
     /**
      * @var ContactRepository
@@ -89,6 +98,7 @@ class ImportService
         ENTITY_TASK,
         ENTITY_PRODUCT,
         ENTITY_EXPENSE,
+        ENTITY_CUSTOMER,
     ];
 
     /**
@@ -103,6 +113,7 @@ class ImportService
         IMPORT_INVOICEPLANE,
         IMPORT_NUTCACHE,
         IMPORT_RONIN,
+        IMPORT_STRIPE,
         IMPORT_WAVE,
         IMPORT_ZOHO,
     ];
@@ -112,6 +123,7 @@ class ImportService
      *
      * @param Manager           $manager
      * @param ClientRepository  $clientRepo
+     * @param CustomerRepository $customerRepo
      * @param InvoiceRepository $invoiceRepo
      * @param PaymentRepository $paymentRepo
      * @param ContactRepository $contactRepo
@@ -120,18 +132,21 @@ class ImportService
     public function __construct(
         Manager $manager,
         ClientRepository $clientRepo,
+        CustomerRepository $customerRepo,
         InvoiceRepository $invoiceRepo,
         PaymentRepository $paymentRepo,
         ContactRepository $contactRepo,
         ProductRepository $productRepo,
         ExpenseRepository $expenseRepo,
         VendorRepository $vendorRepo,
-        ExpenseCategoryRepository $expenseCategoryRepo
+        ExpenseCategoryRepository $expenseCategoryRepo,
+        TaxRateRepository $taxRateRepository
     ) {
         $this->fractal = $manager;
         $this->fractal->setSerializer(new ArraySerializer());
 
         $this->clientRepo = $clientRepo;
+        $this->customerRepo = $customerRepo;
         $this->invoiceRepo = $invoiceRepo;
         $this->paymentRepo = $paymentRepo;
         $this->contactRepo = $contactRepo;
@@ -139,6 +154,7 @@ class ImportService
         $this->expenseRepo = $expenseRepo;
         $this->vendorRepo = $vendorRepo;
         $this->expenseCategoryRepo = $expenseCategoryRepo;
+        $this->taxRateRepository = $taxRateRepository;
     }
 
     /**
@@ -425,8 +441,10 @@ class ImportService
         $entity = $this->{"{$entityType}Repo"}->save($data);
 
         // update the entity maps
-        $mapFunction = 'add' . ucwords($entity->getEntityType()) . 'ToMaps';
-        $this->$mapFunction($entity);
+        if ($entityType != ENTITY_CUSTOMER) {
+            $mapFunction = 'add' . ucwords($entity->getEntityType()) . 'ToMaps';
+            $this->$mapFunction($entity);
+        }
 
         // if the invoice is paid we'll also create a payment record
         if ($entityType === ENTITY_INVOICE && isset($data['paid']) && $data['paid'] > 0) {
@@ -629,14 +647,8 @@ class ImportService
 
     private function getCsvData($fileName)
     {
-        require_once app_path().'/Includes/parsecsv.lib.php';
-
         $this->checkForFile($fileName);
-
-        $csv = new parseCSV();
-        $csv->heading = false;
-        $csv->auto($fileName);
-        $data = $csv->data;
+        $data = array_map('str_getcsv', file($fileName));
 
         if (count($data) > 0) {
             $headers = $data[0];
@@ -839,6 +851,8 @@ class ImportService
 
         $this->maps = [
             'client' => [],
+            'contact' => [],
+            'customer' => [],
             'invoice' => [],
             'invoice_client' => [],
             'product' => [],
@@ -849,11 +863,23 @@ class ImportService
             'invoice_ids' => [],
             'vendors' => [],
             'expense_categories' => [],
+            'tax_rates' => [],
+            'tax_names' => [],
         ];
 
         $clients = $this->clientRepo->all();
         foreach ($clients as $client) {
             $this->addClientToMaps($client);
+        }
+
+        $customers = $this->customerRepo->all();
+        foreach ($customers as $customer) {
+            $this->addCustomerToMaps($customer);
+        }
+
+        $contacts = $this->contactRepo->all();
+        foreach ($contacts as $contact) {
+            $this->addContactToMaps($contact);
         }
 
         $invoices = $this->invoiceRepo->all();
@@ -886,6 +912,13 @@ class ImportService
         foreach ($expenseCaegories as $category) {
             $this->addExpenseCategoryToMaps($category);
         }
+
+        $taxRates = $this->taxRateRepository->all();
+        foreach ($taxRates as $taxRate) {
+            $name = trim(strtolower($taxRate->name));
+            $this->maps['tax_rates'][$name] = $taxRate->rate;
+            $this->maps['tax_names'][$name] = $taxRate->name;
+        }
     }
 
     /**
@@ -916,14 +949,31 @@ class ImportService
     }
 
     /**
+     * @param Customer $customer
+     */
+    private function addCustomerToMaps(AccountGatewayToken $customer)
+    {
+        $this->maps['customer'][$customer->token] = $customer;
+        $this->maps['customer'][$customer->contact->email] = $customer;
+    }
+
+    /**
+     * @param Product $product
+     */
+    private function addContactToMaps(Contact $contact)
+    {
+        if ($key = strtolower(trim($contact->email))) {
+            $this->maps['contact'][$key] = $contact;
+        }
+    }
+
+    /**
      * @param Product $product
      */
     private function addProductToMaps(Product $product)
     {
         if ($key = strtolower(trim($product->product_key))) {
-            $this->maps['product'][$key] = $product->id;
-            $this->maps['product_notes'][$key] = $product->notes;
-            $this->maps['product_cost'][$key] = $product->cost;
+            $this->maps['product'][$key] = $product;
         }
     }
 

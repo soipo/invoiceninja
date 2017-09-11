@@ -98,8 +98,11 @@ class InvoiceController extends BaseController
         $clients = Client::scope()->withTrashed()->with('contacts', 'country');
 
         if ($clone) {
+            $entityType = $clone == INVOICE_TYPE_STANDARD ? ENTITY_INVOICE : ENTITY_QUOTE;
             $invoice->id = $invoice->public_id = null;
             $invoice->is_public = false;
+            $invoice->is_recurring = $invoice->is_recurring && $clone == INVOICE_TYPE_STANDARD;
+            $invoice->invoice_type_id = $clone;
             $invoice->invoice_number = $account->getNextNumber($invoice);
             $invoice->due_date = null;
             $invoice->balance = $invoice->amount;
@@ -305,7 +308,6 @@ class InvoiceController extends BaseController
             'account' => Auth::user()->account->load('country'),
             'products' => Product::scope()->orderBy('product_key')->get(),
             'taxRateOptions' => $taxRateOptions,
-            'currencies' => Cache::get('currencies'),
             'sizes' => Cache::get('sizes'),
             'invoiceDesigns' => InvoiceDesign::getDesigns(),
             'invoiceFonts' => Cache::get('fonts'),
@@ -372,8 +374,10 @@ class InvoiceController extends BaseController
         $message = trans("texts.updated_{$entityType}");
         Session::flash('message', $message);
 
-        if ($action == 'clone') {
-            return url(sprintf('%ss/%s/clone', $entityType, $invoice->public_id));
+        if ($action == 'clone_invoice') {
+            return url(sprintf('invoices/%s/clone', $invoice->public_id));
+        } else if ($action == 'clone_quote') {
+            return url(sprintf('quotes/%s/clone', $invoice->public_id));
         } elseif ($action == 'convert') {
             return $this->convertQuote($request, $invoice->public_id);
         } elseif ($action == 'email') {
@@ -480,6 +484,8 @@ class InvoiceController extends BaseController
                 $key = 'emailed_' . $entityType;
             } elseif ($action == 'markPaid') {
                 $key = 'created_payment';
+            } elseif ($action == 'download') {
+                $key = 'downloaded_invoice';
             } else {
                 $key = "{$action}d_{$entityType}";
             }
@@ -505,7 +511,12 @@ class InvoiceController extends BaseController
 
     public function cloneInvoice(InvoiceRequest $request, $publicId)
     {
-        return self::edit($request, $publicId, true);
+        return self::edit($request, $publicId, INVOICE_TYPE_STANDARD);
+    }
+
+    public function cloneQuote(InvoiceRequest $request, $publicId)
+    {
+        return self::edit($request, $publicId, INVOICE_TYPE_QUOTE);
     }
 
     public function invoiceHistory(InvoiceRequest $request)

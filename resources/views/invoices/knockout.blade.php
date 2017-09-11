@@ -166,16 +166,36 @@ function ViewModel(data) {
         }
     });
 
-    self.hasTasksCached;
+    self.hasTasksCached = false;
     self.hasTasks = ko.computed(function() {
         if (self.hasTasksCached) {
             return true;
         }
         invoice = self.invoice();
-        for (var i=0; i<invoice.invoice_items().length; ++i) {
-            var item = invoice.invoice_items()[i];
-            if (! item.isEmpty() && item.invoice_item_type_id() == {{ INVOICE_ITEM_TYPE_TASK }}) {
+        for (var i=0; i<invoice.invoice_items_with_tasks().length; ++i) {
+            var item = invoice.invoice_items_with_tasks()[i];
+            if (! item.isEmpty()) {
                 self.hasTasksCached = true;
+                return true;
+            }
+        }
+        return false;
+    });
+
+    self.hasItemsCached = false;
+    self.forceShowItems = ko.observable(false);
+    self.hasItems = ko.computed(function() {
+        if (self.forceShowItems()) {
+            return true;
+        }
+        if (self.hasItemsCached) {
+            return true;
+        }
+        invoice = self.invoice();
+        for (var i=0; i<invoice.invoice_items_without_tasks().length; ++i) {
+            var item = invoice.invoice_items_without_tasks()[i];
+            if (! item.isEmpty()) {
+                self.hasItemsCached = true;
                 return true;
             }
         }
@@ -229,7 +249,6 @@ function InvoiceModel(data) {
     self.auto_bill = ko.observable(0);
     self.client_enable_auto_bill = ko.observable(false);
     self.invoice_status_id = ko.observable(0);
-    self.invoice_items = ko.observableArray();
     self.documents = ko.observableArray();
     self.expenses = ko.observableArray();
     self.amount = ko.observable(0);
@@ -246,15 +265,31 @@ function InvoiceModel(data) {
     self.custom_text_value1 = ko.observable();
     self.custom_text_value2 = ko.observable();
 
+    self.invoice_items_with_tasks = ko.observableArray();
+    self.invoice_items_without_tasks = ko.observableArray();
+    self.invoice_items = ko.computed({
+        read: function () {
+            return self.invoice_items_with_tasks().concat(self.invoice_items_without_tasks());
+        },
+        write: function(data) {
+            self.invoice_items_with_tasks.removeAll();
+            self.invoice_items_without_tasks.removeAll();
+            for (var i=0; i<data.length; i++) {
+                var item = new ItemModel(data[i]);
+                if (item.isTask()) {
+                    self.invoice_items_with_tasks.push(item);
+                } else {
+                    self.invoice_items_without_tasks.push(item);
+                }
+            }
+        },
+        owner: this
+    })
+
     self.mapping = {
         'client': {
             create: function(options) {
                 return new ClientModel(options.data);
-            }
-        },
-        'invoice_items': {
-            create: function(options) {
-                return new ItemModel(options.data);
             }
         },
         'documents': {
@@ -269,7 +304,7 @@ function InvoiceModel(data) {
         },
     }
 
-    self.addItem = function() {
+    self.addItem = function(isTask) {
         if (self.invoice_items().length >= {{ MAX_INVOICE_ITEMS }}) {
             return false;
         }
@@ -277,7 +312,12 @@ function InvoiceModel(data) {
         @if ($account->hide_quantity)
             itemModel.qty(1);
         @endif
-        self.invoice_items.push(itemModel);
+        if (isTask) {
+            itemModel.invoice_item_type_id({{ INVOICE_ITEM_TYPE_TASK }});
+            self.invoice_items_with_tasks.push(itemModel);
+        } else {
+            self.invoice_items_without_tasks.push(itemModel);
+        }
         applyComboboxListeners();
         return itemModel;
     }
@@ -329,7 +369,11 @@ function InvoiceModel(data) {
     })
 
     self.removeItem = function(item) {
-        self.invoice_items.remove(item);
+        if (item.isTask()) {
+            self.invoice_items_with_tasks.remove(item);
+        } else {
+            self.invoice_items_without_tasks.remove(item);
+        }
         refreshPDF(true);
     }
 
@@ -359,7 +403,7 @@ function InvoiceModel(data) {
         if (parseInt(self.is_amount_discount())) {
             return roundToTwo(self.discount());
         } else {
-            return roundToTwo(self.totals.rawSubtotal() * (self.discount()/100));
+            return roundToTwo(self.totals.rawSubtotal() * self.discount() / 100);
         }
     });
 
@@ -403,7 +447,7 @@ function InvoiceModel(data) {
                 if (parseInt(self.is_amount_discount())) {
                     lineTotal -= roundToTwo((lineTotal/total) * self.discount());
                 } else {
-                    lineTotal -= roundToTwo(lineTotal * (self.discount()/100));
+                    lineTotal -= roundToTwo(lineTotal * self.discount() / 100);
                 }
             }
 
@@ -510,10 +554,7 @@ function InvoiceModel(data) {
             total = NINJA.parseFloat(total) + customValue2;
         }
 
-        var paid = self.totals.rawPaidToDate();
-        if (paid > 0) {
-            total -= paid;
-        }
+        total -= self.totals.rawPaidToDate();
 
         return total;
     });
@@ -538,10 +579,10 @@ function InvoiceModel(data) {
         return self.default_footer() && self.invoice_footer() != self.default_footer();
     }
 
-    self.applyInclusivTax = function(taxRate) {
+    self.applyInclusiveTax = function(taxRate) {
         for (var i=0; i<self.invoice_items().length; i++) {
             var item = self.invoice_items()[i];
-            item.applyInclusivTax(taxRate);
+            item.applyInclusiveTax(taxRate);
         }
     }
 
@@ -554,7 +595,7 @@ function InvoiceModel(data) {
         if (taxKey.substr(0, 1) != 1) {
             return;
         }
-        self.applyInclusivTax(taxRate);
+        self.applyInclusiveTax(taxRate);
     }
 
     self.onTax2Change = function(obj, event) {
@@ -566,20 +607,19 @@ function InvoiceModel(data) {
         if (taxKey.substr(0, 1) != 1) {
             return;
         }
-        self.applyInclusivTax(taxRate);
+        self.applyInclusiveTax(taxRate);
     }
 
-    self.invoice_items_with_tasks = ko.computed(function() {
-        return ko.utils.arrayFilter(self.invoice_items(), function(item) {
-            return item.invoice_item_type_id() == {{ INVOICE_ITEM_TYPE_TASK }};
-        });
-    });
-
-    self.invoice_items_without_tasks = ko.computed(function() {
-        return ko.utils.arrayFilter(self.invoice_items(), function(item) {
-            return item.invoice_item_type_id() != {{ INVOICE_ITEM_TYPE_TASK }};
-        });
-    });
+    self.isAmountDiscountChanged = function(obj, event) {
+        if (! event.originalEvent) {
+            return;
+        }
+        if (! isStorageSupported()) {
+            return;
+        }
+        var isAmountDiscount = $('#is_amount_discount').val();
+        localStorage.setItem('last:is_amount_discount', isAmountDiscount);
+    }
 }
 
 function ClientModel(data) {
@@ -769,6 +809,10 @@ function ItemModel(data) {
     self.invoice_item_type_id = ko.observable({{ INVOICE_ITEM_TYPE_STANDARD }});
     self.actionsVisible = ko.observable(false);
 
+    self.isTask = ko.computed(function() {
+        return self.invoice_item_type_id() == {{ INVOICE_ITEM_TYPE_TASK }};
+    });
+
     this.tax1 = ko.computed({
         read: function () {
             return self.tax_rate1IsInclusive() + ' ' + self.tax_rate1() + ' ' + self.tax_name1();
@@ -815,13 +859,19 @@ function ItemModel(data) {
 
     if (data) {
         ko.mapping.fromJS(data, {}, this);
+        var precision = getPrecision(this.cost());
+        var cost = parseFloat(this.cost());
+        if (cost) {
+            this.cost(cost.toFixed(Math.max(2, precision)));
+        }
+        this.qty(roundSignificant(this.qty()));
     }
 
     this.totals = ko.observable();
 
     this.totals.rawTotal = ko.computed(function() {
-        var cost = roundToTwo(NINJA.parseFloat(self.cost()));
-        var qty = roundToTwo(NINJA.parseFloat(self.qty()));
+        var cost = roundSignificant(NINJA.parseFloat(self.cost()));
+        var qty = roundSignificant(NINJA.parseFloat(self.qty()));
         var value = cost * qty;
         return value ? roundToTwo(value) : 0;
     });
@@ -845,7 +895,7 @@ function ItemModel(data) {
 
     this.onSelect = function() {}
 
-    self.applyInclusivTax = function(taxRate) {
+    self.applyInclusiveTax = function(taxRate) {
         if ( ! taxRate) {
             return;
         }
@@ -858,7 +908,7 @@ function ItemModel(data) {
             var taxKey = $(event.currentTarget).val();
             var taxRate = parseFloat(self.tax_rate1());
             if (taxKey.substr(0, 1) == 1) {
-                self.applyInclusivTax(taxRate);
+                self.applyInclusiveTax(taxRate);
             }
         }
     }
@@ -868,7 +918,7 @@ function ItemModel(data) {
             var taxKey = $(event.currentTarget).val();
             var taxRate = parseFloat(self.tax_rate2());
             if (taxKey.substr(0, 1) == 1) {
-                self.applyInclusivTax(taxRate);
+                self.applyInclusiveTax(taxRate);
             }
         }
     }
@@ -963,7 +1013,7 @@ ko.bindingHandlers.productTypeahead = {
                     model.notes(datum.notes);
                 }
                 if (datum.cost) {
-                    model.cost(accounting.toFixed(datum.cost, 2));
+                    model.cost(roundSignificant(datum.cost, 2));
                 }
                 if (!model.qty()) {
                     model.qty(1);
